@@ -1,0 +1,174 @@
+---
+title: "NYPD_incident_report"
+author: "Thomas Mooney"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Cleaning the data
+
+  For this data analysis I only want to answer questions pertaining to the time and location data in this data set.  I am going to drop the columns that I do no need in the data analysis below.  It also looks like there are duplicates of Incident_keys, which need to be removed from the tibble.
+
+The OCCUR_DATE column needs to be mutated to a "date" class type so I can use that information in future lubridate package functions.
+
+```{r get_NYPD_data }
+
+## Get historic NYPD incident data from one url address, and import libraries for data analysis.
+
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+
+
+file<-"~/data/NYPD_Shooting_Incident_Data__Historic_.csv"
+
+NYPD_data <- read_csv(file)
+```
+
+
+
+``` {r Tidying of data and summary}
+## The class type for the occur date needs to be changed to a mdy() data type.  I will also delete the columns that are not needed for my data analysis, and delete any duplicate incident keys.
+
+NYPD_data <- mutate(NYPD_data, OCCUR_DATE = mdy(OCCUR_DATE)) 
+NYPD_data <- NYPD_data %>%
+    select(-c(PRECINCT,JURISDICTION_CODE,LOCATION_DESC,STATISTICAL_MURDER_FLAG,PERP_AGE_GROUP,PERP_SEX,PERP_RACE,VIC_AGE_GROUP,VIC_SEX,VIC_RACE,Lon_Lat)) %>%
+  distinct(INCIDENT_KEY, .keep_all=TRUE)
+
+summary(NYPD_data)
+
+```
+
+# Mapping the location data
+
+I would like to see the location data marked on a map of the counties of New York to determine if these recorded incidents are centered on specific locations in New York City.  The ggplot package has a data set already loaded on the package with county boundary location data.  I uploaded that data set and filtered for counties in New York, graphing it with x = longitude and y = latitude.  I then plotted all of the incident locations group by year using the stat_density_2d function to plot the contoured density of NYPD recorded incidents.  
+
+``` {r maping locations of NYPD incident}
+
+
+us_county <- map_data("county")
+newyork_county <- us_county %>%
+    filter( region == "new york")
+nyny_county <- newyork_county %>%
+     filter( subregion %in% c("queens", "new york", "kings", "bronx", "richmond"))
+
+base_map <- ggplot(nyny_county, aes(x=long, y = lat, group = group)) +
+            geom_polygon( color = "black", fill = "white") + 
+            coord_quickmap() + 
+            theme_void()
+
+base_map + stat_density_2d(data=NYPD_data, aes(x=Longitude,y=Latitude, group=year(OCCUR_DATE), color=after_stat(level)),geom="polygon", alpha=0.3) + scale_fill_viridis_c() + 
+    ggtitle("Locations of NYPD incidents per year") + facet_wrap(~year(OCCUR_DATE))
+
+for(i in 1:length(NYPD_data$BORO)){
+    if (NYPD_data$BORO[i] %in% c("MANHATTAN","BRONX")){
+        NYPD_data$BORO[i] = "MANHATTAN/BRONX"
+    }
+}
+
+```
+
+From these location density contour plots, it shows that NYPD shooting incidents are clustered at three separate locations within the city.  Since the northern cluster of incident locations spans the area between Manhattan and the Bronx, I will combine both of these borough's event into one group. The spots in Brooklyn and Queens appear to be localized within their respective boroughs.
+
+# Histogram of events
+## Time of day analysis
+
+I want to know the distribution of events throughout the day and during different months of the year to determine if there is a seasonality difference in the rate of incidents.
+
+``` {r Time analysis}
+hours<-seq(0,23,1)
+
+timeofday <- ggplot(data = NYPD_data, aes(x= hour(OCCUR_TIME), fill = BORO)) +
+         stat_bin(aes(y=after_stat(count)),bins = 24) +
+         scale_x_continuous(name="Time of Day",labels=hours,breaks=c(0:23)) +
+         scale_fill_viridis_d(option = "plasma") +
+         ggtitle("Number of NYPD Incidents at different hours") +
+         ylab("# of NYPD incidents")
+
+
+timeofday
+```
+
+The histogram of incidents grouped by the time of day shows the least amount of incidents happen between 6-10AM.  The number of NYPD shootings steadily increase from 10AM throughout the day, peaking at 11 PM.
+
+## Time of Year
+My next question would be is there a seasonal trend to the number of incidents throughout the year, and if there is, do we see the same seasonal trend in each borough?
+
+``` {r Time of year}
+
+months<-c("Jan" , "Feb" , "Mar" , "Apr" , "May" , "June", "July", "Aug" , "Sep" , "Oct",  "Nov" ,"Dec" )
+
+timeofyear <- ggplot(data = NYPD_data, aes(x= month(OCCUR_DATE), fill = BORO)) + 
+    stat_bin(aes(y=after_stat(count)), bins=12)  +
+    scale_fill_viridis_d(option="plasma")+
+    scale_x_continuous(name = "Months", labels= months, breaks=c(1:12))+
+    ggtitle("Number of NYPD Incidents in different Months") +
+    ylab("# of NYPD incidents")
+
+timeofyear
+
+```
+
+It looks like there is a seasonal trend to the number of NYPD incidents for each year, and it is consistent for each borough.  The number of incidents in Staten Island are so low that it is difficult to see if it follows the same seasonal trend as the other boroughs.  The number of NYPD shooting incidents is at its lowest in February and increases to a peak volume of incidents in August.  The number of events then decreases from August to February.
+
+I would also like to see if the rate of incidents has a trend over time in each borough.  I need to group the data by "BORO", arrange by date and time, and create a new column of the time difference between incidents. I can then graph this value over time with each borough as a different group.  I need to transform the data to include the date and time in the date time format.  
+
+```{r Rate of incidnets over time per Boro }
+
+NYPD_data <- NYPD_data %>%
+            group_by(BORO) %>%
+            arrange(BORO, OCCUR_DATE, OCCUR_TIME) %>%
+            mutate(DATETIME = as.POSIXct(paste(OCCUR_DATE,OCCUR_TIME),
+            format = "%Y-%m-%d %H:%M")) %>%
+            mutate( TIMEDIFF = difftime(DATETIME,lag(DATETIME),units="hours"))
+
+NYPD_data <- NYPD_data %>%
+            mutate(year = year(OCCUR_DATE),
+                   month = month(OCCUR_DATE))
+
+
+summary_data <- NYPD_data %>% 
+                group_by(BORO,year,month)%>%
+                summarise(average_rate =  mean(TIMEDIFF),
+                var_rate = var(TIMEDIFF),
+                n= n())
+
+p <- ggplot(summary_data, mapping=aes(x = as.numeric(year+month/12),
+                                 y=(1/as.numeric(average_rate)*168), 
+                                 color=BORO)) + 
+                                geom_line() +
+                                 scale_y_log10()+
+                                scale_fill_viridis_c() +
+                                xlab("Year") +
+                                ylab("Average # of incidents per week") +
+                                ggtitle("Average # of incidents per Boro over time")
+
+p + geom_smooth()
+
+```
+
+Looking at the trend of the average # of incidents over a 7 day period for each borough, the Manhattan/Bronx location and Brooklyn have similar rates of incidents.  The average rate steadily decreased until a low point in 2019.  After 2019, the rate increases in Brooklyn, Manhattan, the Bronx and Queens.  The Manhattan/Bronx area seems to be increasing at a faster rate then Brooklyn.  It is also possible to see the seasonal trend in each borough, and the rate of incidents peaks at the same time each year for Brooklyn, Manhattan, Queens and the Bronx.  Staten Island remains the lowest rate of NYPD incidents throughout all time periods in the data.
+
+# Conclusion
+
+This analysis of historic shooting incidents recorded by the NYPD show the following:
+
+1. The shootings appear to be grouped in three separate locations in the city, and these locations have not changed for the last 16 years.
+2. The number of shooting incidents are highest during the early morning, or late evening hours of the day.
+3. The number of shooting incidents show a seasonal trend that peak during the summer months, June-August.
+4. The rate of shooting incidents were decreasing until 2019, but they are now increasing for all boroughs except for Staten Island. 
+
+# Bias
+
+This analysis is dependent on the data that was collected by the NYPD during this time frame.  Any information about the people involved were not used in this analysis to avoid inadvertently introducing personal biases.
+
+``` {r}
+sessionInfo()
+```
+
