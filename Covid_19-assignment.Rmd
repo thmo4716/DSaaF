@@ -1,0 +1,402 @@
+---
+title: "Covid_19 assignment"
+author: "Thomas Mooney"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(broom)
+library(purrr)
+
+
+```
+
+#Importing the Covid 19 files
+
+All the files are .csv files from the following website:
+
+  https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/
+ 
+I will import the files, clean and tidy the data.  
+  
+
+```{r importing the data, echo=FALSE}
+
+# The url for the files are created below.
+
+url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+
+urls <- str_c(url,file_names)
+
+confirmed_global <- read_csv(urls[1])
+deaths_global <- read_csv(urls[2])
+confirmed_us <- read_csv(urls[3])
+deaths_us <- read_csv(urls[4])
+
+# The data in each of these csv files need to be pivoted to have a date in each row.  I will not be doing any analysis with the location data, so I will delete the long and lat columns.
+
+confirmed_global <- confirmed_global %>%
+    pivot_longer (cols = -c('Province/State', 'Country/Region', Lat, Long), 
+                  names_to = "date", 
+                  values_to = "cases") %>%
+    select(-c(Lat,Long))
+
+confirmed_us <- confirmed_us %>%
+    pivot_longer (cols = -(UID:Combined_Key), 
+                  names_to = "date", 
+                  values_to = "cases") %>%
+    select(Admin2:cases) %>%
+    mutate(date=mdy(date)) %>%
+    select(-c(Lat,Long_))
+
+deaths_global <- deaths_global %>%
+    pivot_longer (cols = -c('Province/State', 'Country/Region', Lat, Long), 
+                  names_to = "date", 
+                  values_to = "deaths") %>%
+    select(-c(Lat,Long))
+
+deaths_us_r <- deaths_us %>%
+    pivot_longer (cols = -(UID:Population), 
+                  names_to = "date", 
+                  values_to = "deaths") %>%
+    select(Admin2:deaths) %>%
+    mutate(date=mdy(date)) %>%
+    select(-c(Lat,Long_))
+
+#Combining global and confirmed case tibbles into one. 
+
+global <- confirmed_global %>%
+    full_join(deaths_global) %>%
+    rename(Country_Region = 'Country/Region', Province_State = 'Province/State') %>%
+    mutate(date = mdy(date))
+
+#Filtering for only dates with cases > 0.
+global <- global %>% filter(cases>0)
+
+#Combining the Province_State and Contry_Region columns to be similar to the US combined table.
+
+global <- global %>%
+    unite("Combined_Key",
+          c(Province_State, Country_Region),
+          sep = ", ",
+          na.rm = TRUE,
+          remove = FALSE)
+
+#URL for global population data
+
+uid_url <-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+#Reading in the global population data
+
+uid <- read_csv(uid_url)
+
+#Selecting only the columns that I need to join to the global cases/deaths tibble.
+
+uid <- uid %>% select(-c(Lat,Long_,Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>%
+    left_join(uid, by = c("Province_State","Country_Region")) %>%
+    select(-c(UID,FIPS)) %>%
+    select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+
+us <- confirmed_us %>%
+    full_join(deaths_us_r)
+
+
+```
+
+## Comment 
+
+  When looking at a summary of the data, there are 3 dates where the number of deaths and cases are negative.  I want to just remove these from the data set since that is impossible.  There are also some population values that are 0. This doesn't make sense so I will replace the 0 value with NA and fill the population with the value listed on the subsequent date.
+
+``` {r cleaning the US dataset, echo=FALSE}
+us <- us %>% filter(cases > 0)
+
+us$Population[us$Population == 0] <- NA
+
+us_fixed <- us %>% group_by(Province_State, Country_Region, date) %>%
+    fill(Population, .direction = "updown") %>%
+    ungroup()
+```
+  
+  Now I can begin to group the data by state and date, and calculate additional columns.  I also want to remove the cases isolated to cruise ships since those are isolated incidents.
+
+```{r organizing US dataset, echo=FALSE}
+us_by_state <- us_fixed %>% 
+    group_by(Province_State, Country_Region, date) %>%
+    filter(!Province_State %in% c('Grand Princess','Diamond Princess')) %>%
+    summarize(cases=sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+    mutate(deaths_per_thou = deaths * 1000 / Population) %>%
+    mutate(cases_per_thou = cases * 1000 / Population) %>%
+    select(Province_State, Country_Region, date, cases, deaths, deaths_per_thou,cases_per_thou, Population) %>%
+    ungroup()
+```
+
+# Visualizations of US data
+
+It will look very messy if I were to graph all of the Province_State data on the same chart, so I will focus on just visualizing the top 10 Provinces_States for Covid cases per 1000 people.
+
+``` {R Visuallizations of US Covid Data, echo=FALSE}
+us_10_max <- us_by_state %>% 
+    group_by(Province_State) %>%
+    arrange(Province_State, date) %>%
+    summarise(max_cases_per_thou = max(cases_per_thou))
+
+us_case_max<-slice_max(us_10_max, order_by = max_cases_per_thou, n=10)
+
+us_by_state %>%
+    filter(cases>0) %>%
+    filter(Province_State %in% us_case_max$Province_State) %>%
+    ggplot(aes(x=date,y=cases_per_thou, group=Province_State)) +
+    geom_line(aes(colour=Province_State)) + scale_y_log10() +
+    theme_bw()
+
+us_by_state %>%
+    filter(cases>0) %>%
+    filter(Province_State %in% us_case_max$Province_State) %>%
+    ggplot(aes(x=date, group=Province_State)) +
+    geom_line(aes(y=deaths_per_thou, colour=Province_State)) +
+    theme_bw()
+
+
+```
+
+# Next Steps
+
+From the graph above, it looks like each state has their own rate of deaths per cases.  I would like to create a linear regression model for each state, and plot the differences of death per cases on a map of the US to see if there is a geographical trend in the data.  I am going to set all of the intercepts for deaths per cases to 0 and calculate the coefficients. To create the linear model for each state I will need to nest by the Province State attribute and create three different nested tables utilizing the brooom package functions for tidying up the outputs of lm().  I will be using these nested tibbles in subsequent tests. 
+
+``` {r US graph of the death per case model, echo=FALSE}
+
+US_PREDICTIONS <- us_by_state %>%
+    nest(data= -Province_State) %>%
+    mutate(
+        fit = map(data, ~ lm(deaths ~ cases - 1 , data = .x)),
+        tidied = map(fit,tidy),
+        glanced = map(fit,glance),
+        augmented = map(fit,augment)
+    )
+
+# .resid columns and predicted (.fitted) deaths based off of case #
+US_aug <- US_PREDICTIONS %>% unnest(augmented)
+
+# r.squared statistic per Province_State of each lm()
+US_glanced <- US_PREDICTIONS %>% unnest(glanced)
+
+# estimate coefficient and std. error
+US_tidied <- US_PREDICTIONS %>% unnest(tidied)
+
+# Time series data
+US_data <- US_PREDICTIONS %>% unnest(data)
+
+# I need a date value to graph predicted deaths from the model versus actual deaths
+US_aug <- US_aug %>%
+    mutate(date = US_data$date)
+
+US_glanced %>% filter(Province_State %in% us_case_max$Province_State) %>%
+    ggplot() +
+    geom_col(aes(x= reorder(Province_State, r.squared), y=r.squared)) +
+    coord_flip() +
+    theme_minimal() +
+    ggtitle("10 highest US States with Covid cases per thousand people R squared values") +
+    xlab("State_Province") +
+    ylab("R squared value")
+```
+  
+  The chart above shows the R squared value for our subset of states and provinces from the US data set with the largest case per thousand value.  
+
+  I would also like to see what the sum of the residuals are for each state in our subset.  The graph below shows that the linear model underestimates every states death per case.  This is good information to keep in mind while looking at the estimated coefficient that will be used to predict the number of deaths per case in subsequent visualizations.  The last visualization in this section is of the linear model versus the actual death per case data.  I trimmed the subset of State that are being graphed to the five with the highest residuals.  In general, these linear models underestimate the number of deaths until 10^5 to 10^6 cases per State.     
+  
+``` {r, residual summary, echo=FALSE}
+US_aug %>% filter(Province_State %in% us_case_max$Province_State) %>%
+    group_by(Province_State) %>%
+    summarise(Residual_sum = sum(.resid)) %>%
+    ggplot() +
+    geom_col(aes(x= reorder(Province_State, Residual_sum), y=Residual_sum)) +
+    coord_flip() +
+    theme_minimal() +
+    ggtitle("Sum of residuals for 10 highest State/Province cases per thousand people") +
+    xlab("State_Province") +
+    ylab("Residual Sum")
+
+US_aug %>% filter(Province_State %in% c("New York","Florida","South Carolina","Rhode Island", "Kentucky")) %>% filter(deaths >0) %>%
+         group_by(Province_State) %>%
+         ggplot(aes(x=cases)) +
+         geom_point(aes(y=deaths, colour=Province_State), size=0.2, alpha = 0.3) +
+         geom_line(aes(y=.fitted, colour=Province_State))+
+         theme_minimal() +
+         ggtitle("Actual versus predicted deaths per cases on a Log10 scale") +
+         xlab("Cases") +
+         ylab("Deaths") +
+    scale_x_log10() + scale_y_log10()
+```
+
+# Choropleth US map
+
+  Now I would like to make a choropleth map with the linear coefficient being used to estimate the number of deaths per million cases in each state as the color variable shown on the map of the US.  This map will only be for the continental United States, so I will be using a left_join to combine the map information to the model tibble that I created earlier.  Using the information about the residuals that were graphed in the last visualization, I would like to calculate the estimated number of deaths at 10000 cases since that is approximately where the residuals for the linear model are closest to the actual results.
+
+``` {r, choropleth map of the US, echo=FALSE}
+all_states<-map_data("state")
+
+US_tidied <- US_tidied %>%
+    mutate(region = tolower(Province_State))
+
+US_tidied_total <- left_join(all_states,US_tidied)
+
+US_tidied_total <- US_tidied_total %>% mutate(est_death_per_10thou_cases = estimate * 10000)
+
+US_map_w_data <- ggplot(US_tidied_total, aes(long, lat, group=group, fill=est_death_per_10thou_cases)) + 
+  geom_polygon(color="gray") + 
+  scale_fill_viridis_c(option="D") +
+  scale_y_continuous(breaks=c()) +
+  scale_x_continuous(breaks=c()) +
+  labs(fill = "Estimated # of deaths per 10000 cases") 
+
+US_map_w_data
+```
+
+
+# Global data analysis
+
+  The summary of the Global tibble that I created at the beginning has a few NA values in the population attribute.  I will use the fill() verb to correct for these data points.  I will go through the same analysis process with the global data set as I did with the US data set.
+
+``` {r global data anaylsis, echo=FALSE}
+
+global_fixed <- global %>%
+    group_by(Country_Region, date) %>%
+    fill(Population, .direction = "updown") %>%
+    ungroup()
+
+global_by_region <- global_fixed %>%
+    group_by(Country_Region, date) %>%
+    summarize(cases=sum(cases), deaths = sum(deaths), Population = sum (Population)) %>%
+    mutate(deaths_per_thou = deaths * 1000/Population) %>%
+    mutate(cases_per_thou = cases * 1000/Population) %>%
+    mutate(region = tolower(Country_Region)) %>%
+    ungroup()
+
+global_10_max <- global_by_region %>% 
+    group_by(Country_Region) %>%
+    arrange(Country_Region, date) %>%
+    summarise(max_deaths = max(deaths))
+
+global_deaths_max <- slice_max(global_10_max, order_by = max_deaths, n=10)
+
+global_by_region %>% 
+    filter(Country_Region %in% global_deaths_max$Country_Region) %>%
+    ggplot(aes(x = cases_per_thou, group = Country_Region)) +
+    geom_point(aes(y = deaths_per_thou, colour = Country_Region))
+
+GLOBAL_PREDICTIONS <- global_by_region %>%
+    nest(data= -Country_Region) %>%
+    mutate(
+        fit = map(data, ~ lm(deaths ~ cases - 1 , data = .x)),
+        tidied = map(fit,tidy),
+        glanced = map(fit,glance),
+        augmented = map(fit,augment)
+    )
+# .resid columns and predicted (.fitted) deaths based off of case #
+global_aug <- GLOBAL_PREDICTIONS %>% unnest(augmented)
+
+# r.squared statistic per Province_State of each lm()
+global_glanced <- GLOBAL_PREDICTIONS %>% unnest(glanced)
+
+# estimate coefficient and std. error
+global_tidied <- GLOBAL_PREDICTIONS %>% unnest(tidied)
+```
+
+
+``` {R Graphing summary of predictive model, echo=FALSE}
+
+global_glanced %>% filter(Country_Region %in% global_deaths_max$Country_Region) %>%
+    ggplot() +
+    geom_col(aes(x= reorder(Country_Region, r.squared), y=r.squared)) +
+    coord_flip() +
+    theme_minimal() +
+    ggtitle("10 highest Countries with Covid deaths, deaths ~ cases lm () R squared values") +
+    xlab("Country") +
+    ylab("R squared value")
+
+global_aug %>% filter(Country_Region %in% global_deaths_max$Country_Region) %>%
+    group_by(Country_Region) %>%
+    summarise(Residual_sum = sum(.resid)) %>%
+    ggplot() +
+    geom_col(aes(x= reorder(Country_Region, Residual_sum), y=Residual_sum)) +
+    coord_flip() +
+    theme_minimal() +
+    ggtitle("Sum of residuals for Countries with the highest Covid-19 deaths") +
+    xlab("COuntry") +
+    ylab("Residual Sum")
+
+```
+
+I can see from the graph above that the US, UK, Italy, France and Germany have the highest residual sum for the linear model.  I want to see what the estimated versus actual data will look like.
+
+``` {r Graphing global model versus actual data, echo=FALSE}
+
+global_aug %>% filter(Country_Region %in% c("US","United Kingdom","Italy","France", "Germany")) %>% filter(deaths >0) %>%
+    group_by(Country_Region) %>%
+    ggplot(aes(x=cases)) +
+    geom_point(aes(y=deaths, colour=Country_Region), size=0.2, alpha = 0.3) +
+    geom_line(aes(y=.fitted, colour=Country_Region))+
+    theme_minimal() +
+    ggtitle("Actual versus predicted deaths per cases on a Log10 scale") +
+    xlab("Cases") +
+    ylab("Deaths") +
+    scale_x_log10() + scale_y_log10()
+
+```
+
+# Global choropleth map
+
+While trying to join the global map data to the lm() table via the Country_Region column, it became apparent that the name of a few countries were not the same between both data sets.  I changed the name of the USA, UK, North and South Korea to match in both tibbles.  I end up not even graphing the results for North Korea, because the estimated # of deaths is so high compared to the rest of the world, that the continuous scale fill does not give any variation in color to the rest of the countries. 
+
+
+``` {r global choropleth map, echo=FALSE}
+
+world_map <- map_data("world") %>% filter(! long>180)
+
+global_tidied$Country_Region[global_tidied$Country_Region == "US"] <- "USA"
+global_tidied$Country_Region[global_tidied$Country_Region == "United Kingdom"] <- "UK"
+global_tidied$Country_Region[global_tidied$Country_Region == "Korea, North"] <- "North Korea"
+global_tidied$Country_Region[global_tidied$Country_Region == "Korea, South"] <- "South Korea"
+
+global_tidied_total <- left_join(world_map,global_tidied, by = c("region"="Country_Region"))
+
+global_tidied_total <- global_tidied_total %>% mutate(est_death_per_mill_cases = estimate * 1000000)
+
+global_map_w_data <- global_tidied_total %>%
+    filter(region != "North Korea") %>%
+    ggplot(aes(long,lat, group=group,fill=(estimate))) +
+    geom_polygon(color="black") + 
+    scale_fill_viridis_c(option="plasma") +
+    scale_y_continuous(breaks=c()) +
+    scale_x_continuous(breaks=c()) +
+    labs(fill = "Estimated # of deaths per million cases") 
+   
+global_map_w_data
+```
+
+# Bias
+  All the data was collected from the John Hopkins Center of Systems Science and Engineering repository.  A list of aggregated data sources that this repository collects from is listed below:
+  
+  https://github.com/CSSEGISandData/COVID-19
+  
+  This analysis is dependent on each region correctly reporting the number of cases and deaths attributed to the SARS-CoV-2 virus.
+
+```{r session data}
+sessionInfo()
+
+```
