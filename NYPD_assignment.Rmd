@@ -45,7 +45,7 @@ summary(NYPD_data)
 
 ```
 
-# Mapping the location data
+## Mapping the location data
 
 I would like to see the location data marked on a map of the counties of New York to determine if these recorded incidents are centered on specific locations in New York City.  The ggplot package has a data set already loaded on the package with county boundary location data.  I uploaded that data set and filtered for counties in New York, graphing it with x = longitude and y = latitude.  I then plotted all of the incident locations group by year using the stat_density_2d function to plot the contoured density of NYPD recorded incidents.  
 
@@ -155,7 +155,7 @@ p + geom_smooth()
 
 Looking at the trend of the average # of incidents over a 7 day period for each borough, the Manhattan/Bronx location and Brooklyn have similar rates of incidents.  The average rate steadily decreased until a low point in 2019.  After 2019, the rate increases in Brooklyn, Manhattan, the Bronx and Queens.  The Manhattan/Bronx area seems to be increasing at a faster rate then Brooklyn.  It is also possible to see the seasonal trend in each borough, and the rate of incidents peaks at the same time each year for Brooklyn, Manhattan, Queens and the Bronx.  Staten Island remains the lowest rate of NYPD incidents throughout all time periods in the data.
 
-# Conclusion
+## Conclusion
 
 This analysis of historic shooting incidents recorded by the NYPD show the following:
 
@@ -164,7 +164,7 @@ This analysis of historic shooting incidents recorded by the NYPD show the follo
 3. The number of shooting incidents show a seasonal trend that peak during the summer months, June-August.
 4. The rate of shooting incidents were decreasing until 2019, but they are now increasing for all boroughs except for Staten Island. 
 
-# Bias
+### Bias
 
 This analysis is dependent on the data that was collected by the NYPD during this time frame.  Any information about the people involved were not used in this analysis to avoid inadvertently introducing personal biases.
 
