@@ -26,7 +26,7 @@ library(lubridate)
 library(ggplot2)
 
 
-file<-"~/data/NYPD_Shooting_Incident_Data__Historic_.csv"
+file<-"https://raw.githubusercontent.com/thmo4716/DSaaF/main/NYPD_Shooting_Incident_Data__Historic_.csv"
 
 NYPD_data <- read_csv(file)
 ```
